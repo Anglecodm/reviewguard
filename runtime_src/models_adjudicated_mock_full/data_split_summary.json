@@ -1,0 +1,17 @@
+{
+  "train_rows": 277,
+  "val_rows": 40,
+  "test_rows": 80,
+  "train_label_counts": {
+    "0": 220,
+    "1": 57
+  },
+  "val_label_counts": {
+    "0": 32,
+    "1": 8
+  },
+  "test_label_counts": {
+    "0": 63,
+    "1": 17
+  }
+}

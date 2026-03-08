@@ -1,0 +1,14 @@
+{
+  "input_rows": 573,
+  "resolved_rows": 0,
+  "unresolved_rows": 573,
+  "strict_mode": true,
+  "label_counts": {},
+  "annotator_overlap_rows": 0,
+  "annotator_raw_agreement": null,
+  "annotator_cohen_kappa": null,
+  "outputs": {
+    "labeled_csv": "data\\labeled_reviews_adjudicated.csv",
+    "unresolved_csv": "data\\labeled_reviews_unresolved.csv"
+  }
+}

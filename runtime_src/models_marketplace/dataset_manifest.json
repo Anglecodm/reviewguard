@@ -1,0 +1,12 @@
+{
+  "dataset_path": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\marketplace_reviews_weak_labeled.csv",
+  "sha256": "a0bada676ab992fa540297d7771b6c58b22dfb27b400ec672bfb882d210a09ca",
+  "rows": 573,
+  "label_counts": {
+    "0": 453,
+    "1": 120
+  },
+  "text_col": "text",
+  "label_col": "label",
+  "generated_at_utc": "2026-03-08T11:01:46.439354+00:00"
+}

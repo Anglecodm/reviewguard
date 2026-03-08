@@ -1,0 +1,26 @@
+{
+  "input_csv": "data\\splits_mock\\test.csv",
+  "rows_evaluated": 118,
+  "positive_rate": 0.23728813559322035,
+  "target_precision": 0.9,
+  "target_met": true,
+  "recommended_threshold": 0.14,
+  "recommended_metrics": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "coverage_auto_decision": 0.7372881355932204,
+    "triage_precision": 1.0,
+    "triage_recall": 1.0,
+    "triage_f1": 1.0
+  },
+  "triage_policy_used": {
+    "review_band": 0.1,
+    "short_review_words": 10
+  },
+  "outputs": {
+    "table_csv": "reports\\adjudicated_mock_thresholds_table.csv",
+    "summary_json": "reports\\adjudicated_mock_thresholds_summary.json"
+  }
+}

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: reviewguard
+    runtime: python
+    rootDir: runtime_src
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: MODEL_PATH
+        value: models/reviewguard_model.joblib
+      - key: METADATA_PATH
+        value: models/reviewguard_metadata.json

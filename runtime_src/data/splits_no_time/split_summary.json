@@ -1,0 +1,40 @@
+{
+  "input_csv": "data\\marketplace_reviews_weak_labeled.csv",
+  "rows_after_filtering": 573,
+  "dropped_exact_duplicates": 0,
+  "dropped_fingerprint_duplicates": 0,
+  "splits": {
+    "train": {
+      "rows": 397,
+      "label_counts": {
+        "0": 315,
+        "1": 82
+      }
+    },
+    "val": {
+      "rows": 58,
+      "label_counts": {
+        "0": 48,
+        "1": 10
+      }
+    },
+    "test": {
+      "rows": 118,
+      "label_counts": {
+        "0": 90,
+        "1": 28
+      }
+    }
+  },
+  "group_leakage": {
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0
+  },
+  "outputs": {
+    "train_csv": "data\\splits_no_time\\train.csv",
+    "val_csv": "data\\splits_no_time\\val.csv",
+    "test_csv": "data\\splits_no_time\\test.csv",
+    "manifest_csv": "data\\splits_no_time\\split_manifest.csv"
+  }
+}

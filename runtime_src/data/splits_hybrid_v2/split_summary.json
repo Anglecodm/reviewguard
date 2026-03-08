@@ -1,0 +1,42 @@
+{
+  "input_csv": "data\\hybrid_bootstrap_reviews_v2.csv",
+  "rows_after_filtering": 2573,
+  "dropped_exact_duplicates": 0,
+  "dropped_fingerprint_duplicates": 0,
+  "splits": {
+    "train": {
+      "rows": 1800,
+      "label_counts": {
+        "0": 960,
+        "1": 840
+      }
+    },
+    "val": {
+      "rows": 258,
+      "label_counts": {
+        "0": 130,
+        "1": 128
+      }
+    },
+    "test": {
+      "rows": 515,
+      "label_counts": {
+        "0": 363,
+        "1": 152
+      }
+    }
+  },
+  "group_leakage": {
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0
+  },
+  "time_split_fallback_used": false,
+  "warnings": [],
+  "outputs": {
+    "train_csv": "data\\splits_hybrid_v2\\train.csv",
+    "val_csv": "data\\splits_hybrid_v2\\val.csv",
+    "test_csv": "data\\splits_hybrid_v2\\test.csv",
+    "manifest_csv": "data\\splits_hybrid_v2\\split_manifest.csv"
+  }
+}

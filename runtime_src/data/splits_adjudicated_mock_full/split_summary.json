@@ -1,0 +1,44 @@
+{
+  "input_csv": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\mock_labeled_reviews_adjudicated.csv",
+  "rows_after_filtering": 573,
+  "dropped_exact_duplicates": 0,
+  "dropped_fingerprint_duplicates": 0,
+  "splits": {
+    "train": {
+      "rows": 397,
+      "label_counts": {
+        "0": 315,
+        "1": 82
+      }
+    },
+    "val": {
+      "rows": 58,
+      "label_counts": {
+        "0": 48,
+        "1": 10
+      }
+    },
+    "test": {
+      "rows": 118,
+      "label_counts": {
+        "0": 90,
+        "1": 28
+      }
+    }
+  },
+  "group_leakage": {
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0
+  },
+  "time_split_fallback_used": true,
+  "warnings": [
+    "Time-aware split produced class gaps in val/test; switched to non-temporal grouped split."
+  ],
+  "outputs": {
+    "train_csv": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_adjudicated_mock_full\\train.csv",
+    "val_csv": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_adjudicated_mock_full\\val.csv",
+    "test_csv": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_adjudicated_mock_full\\test.csv",
+    "manifest_csv": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_adjudicated_mock_full\\split_manifest.csv"
+  }
+}

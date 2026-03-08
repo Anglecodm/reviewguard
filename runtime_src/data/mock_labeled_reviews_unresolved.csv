@@ -1,0 +1,1 @@
+record_id,text,platform,source_url,user,date,rating,model_score,model_decision,seed_label,annotator_a_label,annotator_a_notes,annotator_b_label,annotator_b_notes,adjudicated_label,adjudication_notes,label_status

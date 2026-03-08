@@ -1,0 +1,25 @@
+# Local virtual environments
+.venv/
+venv/
+runtime_src/.venv312/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs and temp files
+*.log
+runtime_src/tmp_*.html
+runtime_src/tmp_*_cache.json
+
+# Large local extraction artifacts
+unpacked_reviewguard/
+REVIEWGUARD_extracted.txt

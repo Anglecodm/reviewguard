@@ -1,0 +1,38 @@
+[
+  {
+    "model": "naive_bayes",
+    "accuracy": 0.9891558441558441,
+    "precision": 0.9512820512820512,
+    "recall": 1.0,
+    "f1": 0.9746086956521738,
+    "roc_auc": 0.9977272727272727,
+    "std_accuracy": 0.008855009835704314
+  },
+  {
+    "model": "random_forest",
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "roc_auc": 1.0,
+    "std_accuracy": 0.0
+  },
+  {
+    "model": "svm",
+    "accuracy": 0.9963636363636365,
+    "precision": 0.9833333333333332,
+    "recall": 1.0,
+    "f1": 0.9913043478260869,
+    "roc_auc": 0.9991735537190083,
+    "std_accuracy": 0.007272727272727275
+  },
+  {
+    "model": "mlp",
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "roc_auc": 1.0,
+    "std_accuracy": 0.0
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "dataset_path": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_mock\\train.csv",
+  "sha256": "dc66a14bd0fe3812d34ef78971b60b8a3a7cad70fdce5a6102dfb530f81e7a36",
+  "rows": 397,
+  "label_counts": {
+    "0": 315,
+    "1": 82
+  },
+  "text_col": "text",
+  "label_col": "label",
+  "generated_at_utc": "2026-03-08T11:38:04.633763+00:00"
+}

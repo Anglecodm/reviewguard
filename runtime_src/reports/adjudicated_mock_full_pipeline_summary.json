@@ -1,0 +1,16 @@
+{
+  "input_csv": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\mock_labeled_reviews_adjudicated.csv",
+  "prefix": "adjudicated_mock_full",
+  "selected_model": "random_forest",
+  "recommended_threshold_from_val": 0.05,
+  "paths": {
+    "splits_dir": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_adjudicated_mock_full",
+    "models_dir": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\models_adjudicated_mock_full",
+    "reports_dir": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\reports",
+    "split_summary_json": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\data\\splits_adjudicated_mock_full\\split_summary.json",
+    "val_summary_json": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\reports\\adjudicated_mock_full_val_summary.json",
+    "test_summary_json": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\reports\\adjudicated_mock_full_test_summary.json",
+    "holdout_metrics_json": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\models_adjudicated_mock_full\\holdout_metrics.json",
+    "metadata_json": "C:\\Users\\winst\\OneDrive\\Desktop\\reviewguard\\runtime_src\\models_adjudicated_mock_full\\reviewguard_metadata.json"
+  }
+}

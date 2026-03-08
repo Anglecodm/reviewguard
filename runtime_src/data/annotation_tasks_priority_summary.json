@@ -1,0 +1,31 @@
+{
+  "input_csv": "data\\marketplace_reviews_weak_labeled.csv",
+  "rows_considered": 453,
+  "rows_selected": 400,
+  "excluded_platforms": "synthetic",
+  "batch_size_requested": 400,
+  "priority_score_range": [
+    0.0,
+    0.29544
+  ],
+  "platform_counts": {
+    "kilimall": 215,
+    "jumia": 185
+  },
+  "top_signal_counts": {
+    "promo_keywords": 73,
+    "caps_heavy": 45,
+    "multi_exclaim": 28,
+    "very_short": 13
+  },
+  "policy_used": {
+    "fraud_threshold": 0.65,
+    "review_band": 0.1,
+    "short_review_words": 10
+  },
+  "outputs": {
+    "priority_csv": "data\\annotation_tasks_priority.csv",
+    "annotator_a_csv": "data\\annotation_tasks_priority_annotator_a.csv",
+    "annotator_b_csv": "data\\annotation_tasks_priority_annotator_b.csv"
+  }
+}

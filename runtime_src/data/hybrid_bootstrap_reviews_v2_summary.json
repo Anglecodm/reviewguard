@@ -1,0 +1,24 @@
+{
+  "marketplace_csv": "data\\marketplace_reviews_weak_labeled.csv",
+  "hf_repo_id": "difraud/difraud",
+  "hf_domain": "product_reviews",
+  "include_marketplace_fraud": true,
+  "external_per_class": 1000,
+  "rows_output": 2573,
+  "dropped_duplicates": 0,
+  "label_counts": {
+    "0": 1453,
+    "1": 1120
+  },
+  "label_source_counts": {
+    "difraud_product_reviews": 2000,
+    "marketplace_real": 573
+  },
+  "platform_counts": {
+    "difraud_product_reviews": 2000,
+    "kilimall": 244,
+    "jumia": 209,
+    "synthetic": 120
+  },
+  "output_csv": "data\\hybrid_bootstrap_reviews_v2.csv"
+}

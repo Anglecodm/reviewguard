@@ -1,0 +1,26 @@
+{
+  "input_csv": "data\\splits_hybrid_v2\\test.csv",
+  "rows_evaluated": 515,
+  "positive_rate": 0.29514563106796116,
+  "target_precision": 0.9,
+  "target_met": true,
+  "recommended_threshold": 0.68,
+  "recommended_metrics": {
+    "accuracy": 0.7747572815533981,
+    "precision": 0.9090909090909091,
+    "recall": 0.2631578947368421,
+    "f1": 0.40816326530612246,
+    "coverage_auto_decision": 0.574757281553398,
+    "triage_precision": 1.0,
+    "triage_recall": 0.15714285714285714,
+    "triage_f1": 0.2716049382716049
+  },
+  "triage_policy_used": {
+    "review_band": 0.1,
+    "short_review_words": 10
+  },
+  "outputs": {
+    "table_csv": "reports\\hybrid_v2_test_table.csv",
+    "summary_json": "reports\\hybrid_v2_test_summary.json"
+  }
+}
