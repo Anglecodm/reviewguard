@@ -77,6 +77,14 @@ def scrape_kilimall(url: str, limit: int = 1000) -> list[ScrapedReview]:
             browser.close()
     else:
         html = _fetch_html(url)
+
+    if not listing_id:
+        listing_id = _extract_kilimall_listing_id_from_html(html)
+        if listing_id:
+            reviews = _fetch_all_kilimall_reviews(listing_id, limit=limit)
+            if reviews:
+                return reviews[:limit]
+
     reviews = _extract_reviews_from_jsonld(html, limit=limit)
     if reviews:
         return reviews[:limit]
@@ -154,9 +162,16 @@ def _parse_jumia_reviews(html: str, limit: int = 1000) -> list[ScrapedReview]:
 
 
 def _extract_kilimall_listing_id(url: str) -> str | None:
-    match = re.search(r"/listing/(\d+)", url, flags=re.I)
+    match = re.search(r"/listing/(\d{6,})", url, flags=re.I)
     if match:
         return match.group(1)
+    for pattern in [
+        r"(?:^|[?&])listing[_-]?id=(\d{6,})",
+        r"(?:^|[?&])id=(\d{6,})",
+    ]:
+        match = re.search(pattern, url, flags=re.I)
+        if match:
+            return match.group(1)
     return None
 
 
@@ -196,7 +211,7 @@ def _fetch_all_kilimall_reviews(listing_id: str, limit: int = 1000) -> list[Scra
             base = item.get("commentBase") if isinstance(item.get("commentBase"), dict) else {}
             content = item.get("commentContent") if isinstance(item.get("commentContent"), dict) else {}
 
-            text = str(content.get("content") or "").strip()
+            text = _kilimall_comment_text(base, content)
             if len(text) < 3:
                 continue
 
@@ -215,7 +230,8 @@ def _fetch_all_kilimall_reviews(listing_id: str, limit: int = 1000) -> list[Scra
                 rating = f"{rating_text} out of 5"
 
             review = ScrapedReview(text=text, user=user, date=date, rating=rating)
-            key = _review_identity(review)
+            comment_id = str(base.get("id") or content.get("id") or "").strip()
+            key = f"kilimall:{comment_id}" if comment_id else _review_identity(review)
             if not key or key in seen:
                 continue
             seen.add(key)
@@ -230,6 +246,36 @@ def _fetch_all_kilimall_reviews(listing_id: str, limit: int = 1000) -> list[Scra
             break
 
     return reviews[:limit]
+
+
+def _extract_kilimall_listing_id_from_html(html_text: str) -> str | None:
+    return _extract_first(
+        html_text,
+        [
+            r"/listing/(\d{6,})",
+            r'"listingId"\s*:\s*"?(\d{6,})"?',
+            r'"listing_id"\s*:\s*"?(\d{6,})"?',
+        ],
+    ) or None
+
+
+def _kilimall_comment_text(base: dict, content: dict) -> str:
+    text = str(content.get("content") or "").strip()
+    if len(text) >= 3:
+        return text
+
+    follow_up = str(content.get("followUpContent") or "").strip()
+    if len(follow_up) >= 3:
+        return follow_up
+
+    score = base.get("productScore")
+    if score is not None and str(score).strip():
+        score_text = str(score).strip()
+        if score_text.endswith(".0"):
+            score_text = score_text[:-2]
+        return f"Rating-only review ({score_text} out of 5)."
+
+    return "Rating-only review."
 
 
 def _extract_jumia_reviews_endpoint(product_url: str, html_text: str) -> str | None:
