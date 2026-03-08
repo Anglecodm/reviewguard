@@ -1,6 +1,7 @@
 services:
   - type: web
     name: reviewguard
+    plan: free
     runtime: python
     rootDir: runtime_src
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
