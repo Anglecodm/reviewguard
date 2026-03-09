@@ -29,10 +29,10 @@ class ScrapedReview:
 
 URL_SCRAPE_ENABLED_PLATFORMS = ("jumia", "kilimall")
 API_INTEGRATION_PLATFORMS = {
-    "amazon": "Amazon",
     "walmart": "Walmart",
 }
 API_ENABLED_PLATFORMS = {
+    "amazon": "Amazon",
     "ebay": "eBay",
     "etsy": "Etsy",
     "shopify": "Shopify",
@@ -47,6 +47,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
 
     hint = _normalize_platform_hint(platform_hint)
     if hint in API_ENABLED_PLATFORMS:
+        if hint == "amazon":
+            return scrape_amazon(url, limit=limit)
         if hint == "ebay":
             return scrape_ebay(url, limit=limit)
         if hint == "etsy":
@@ -59,7 +61,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[hint]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. eBay, Etsy, Shopify and WooCommerce API modes are also supported."
+            "jumia.co.ke and kilimall.co.ke. Amazon, eBay, Etsy, Shopify and WooCommerce marketplace modes are also supported."
         )
 
     platform = _detect_platform_from_host(host)
@@ -67,6 +69,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         return scrape_jumia(url, limit=limit)
     if platform == "kilimall":
         return scrape_kilimall(url, limit=limit)
+    if platform == "amazon":
+        return scrape_amazon(url, limit=limit)
     if platform == "ebay":
         return scrape_ebay(url, limit=limit)
     if platform == "etsy":
@@ -80,7 +84,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[platform]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. eBay, Etsy, Shopify and WooCommerce API modes are also supported."
+            "jumia.co.ke and kilimall.co.ke. Amazon, eBay, Etsy, Shopify and WooCommerce marketplace modes are also supported."
         )
 
     supported_hosts = ", ".join(f"{name}.co.ke" for name in URL_SCRAPE_ENABLED_PLATFORMS)
@@ -119,6 +123,302 @@ def _detect_platform_from_host(host: str) -> str:
         if any(needle in host_norm for needle in needles):
             return platform
     return ""
+
+
+def scrape_amazon(url: str, limit: int = 1000) -> list[ScrapedReview]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Invalid Amazon URL. Use a full URL starting with https://")
+
+    html_errors: list[str] = []
+    interruption_hits = 0
+    review_pages: list[str] = []
+
+    for candidate in _amazon_candidate_urls(url):
+        try:
+            html_text = _fetch_html(candidate, timeout=20, headers=_amazon_headers())
+        except Exception as exc:
+            html_errors.append(str(exc))
+            continue
+
+        if _is_amazon_interruption_page(html_text):
+            interruption_hits += 1
+            continue
+
+        reviews = _extract_reviews_from_jsonld(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+        reviews = _parse_amazon_review_blocks(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+        review_pages.extend(_extract_amazon_review_links(html_text, candidate))
+
+    for review_url in list(dict.fromkeys(review_pages))[:20]:
+        try:
+            html_text = _fetch_html(review_url, timeout=20, headers=_amazon_headers())
+        except Exception as exc:
+            html_errors.append(str(exc))
+            continue
+
+        if _is_amazon_interruption_page(html_text):
+            interruption_hits += 1
+            continue
+
+        reviews = _extract_reviews_from_jsonld(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+        reviews = _parse_amazon_review_blocks(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+    if interruption_hits > 0:
+        raise ValueError(
+            "Amazon blocked this request (captcha/interruption). "
+            "Try again later, switch Amazon locale URL (for example amazon.co.uk), or use a session with lower bot risk."
+        )
+    if html_errors:
+        raise ValueError(f"Amazon review endpoints failed: {html_errors[0]}")
+    raise ValueError("No reviews found on public Amazon endpoints for this item.")
+
+
+def _amazon_candidate_urls(url: str) -> list[str]:
+    resolved_url = _resolve_redirect_url(url)
+    seeds = [resolved_url, url] if resolved_url and resolved_url != url else [url]
+
+    asin = ""
+    for candidate in seeds:
+        asin = _extract_amazon_asin(candidate)
+        if asin:
+            break
+
+    scheme = "https"
+    host = ""
+    for candidate in seeds:
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"}:
+            scheme = parsed.scheme
+        if "amazon." in parsed.netloc.lower():
+            host = parsed.netloc
+            break
+    if not host:
+        host = "www.amazon.com"
+    base_url = f"{scheme}://{host}"
+
+    urls = list(seeds)
+    if asin:
+        urls.extend(
+            [
+                f"{base_url}/dp/{asin}",
+                f"{base_url}/gp/product/{asin}",
+                f"{base_url}/product-reviews/{asin}?reviewerType=all_reviews&sortBy=recent&pageNumber=1",
+                f"{base_url}/product-reviews/{asin}?reviewerType=all_reviews&pageNumber=1",
+                f"{base_url}/product-reviews/{asin}?reviewerType=all_reviews&pageNumber=2",
+            ]
+        )
+
+    return list(dict.fromkeys(urls))
+
+
+def _amazon_headers() -> dict[str, str]:
+    return {
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+
+def _resolve_redirect_url(url: str, timeout: int = 15) -> str:
+    host = urlparse(url).netloc.lower()
+    if "amzn.to" not in host:
+        return url
+    try:
+        req = Request(url, headers=_amazon_headers())
+        with urlopen(req, timeout=timeout) as resp:
+            final_url = str(resp.geturl() or "").strip()
+            return final_url or url
+    except Exception:
+        return url
+
+
+def _extract_amazon_asin(url: str) -> str:
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    query = parsed.query or ""
+    source = f"{path}?{query}"
+
+    patterns = [
+        r"/dp/([A-Z0-9]{10})(?:[/?]|$)",
+        r"/gp/product/([A-Z0-9]{10})(?:[/?]|$)",
+        r"/gp/aw/d/([A-Z0-9]{10})(?:[/?]|$)",
+        r"/product-reviews/([A-Z0-9]{10})(?:[/?]|$)",
+        r"/ASIN/([A-Z0-9]{10})(?:[/?]|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source, flags=re.I)
+        if match:
+            return match.group(1).upper()
+
+    for key, value in parse_qsl(query, keep_blank_values=False):
+        if key.lower() == "asin":
+            value = value.strip().upper()
+            if re.fullmatch(r"[A-Z0-9]{10}", value):
+                return value
+    return ""
+
+
+def _is_amazon_interruption_page(html_text: str) -> bool:
+    body = html_text.lower()
+    strong_markers = (
+        "/errors/validatecaptcha",
+        "/ap/signin/",
+        "form name=\"signin\"",
+        "auth-validate-form",
+        "automated access to amazon data",
+        "sorry, we just need to make sure you're not a robot",
+    )
+    if any(marker in body for marker in strong_markers):
+        return True
+
+    weak_markers = (
+        "robot check",
+        "enter the characters you see below",
+        "type the characters you see in this image",
+        "captcha",
+    )
+    return sum(marker in body for marker in weak_markers) >= 2
+
+
+def _extract_amazon_review_links(html_text: str, base_url: str) -> list[str]:
+    links: list[str] = []
+
+    for absolute in re.findall(
+        r'https?://[^"\'\s<>]*amazon\.[^"\'\s<>]*/product-reviews/[A-Z0-9]{10}[^"\'\s<>]*',
+        html_text,
+        flags=re.I,
+    ):
+        links.append(absolute)
+
+    for relative in re.findall(
+        r'href=["\']([^"\']*/product-reviews/[A-Z0-9]{10}[^"\']*)["\']',
+        html_text,
+        flags=re.I,
+    ):
+        links.append(urljoin(base_url, html.unescape(relative)))
+
+    cleaned: list[str] = []
+    for link in links:
+        link = str(link).strip()
+        if not link:
+            continue
+        link = link.split("#", 1)[0]
+        if "/product-reviews/" not in link:
+            continue
+        cleaned.append(link)
+
+    return list(dict.fromkeys(cleaned))
+
+
+def _parse_amazon_review_blocks(html_text: str, limit: int = 1000) -> list[ScrapedReview]:
+    if limit <= 0:
+        return []
+
+    starts = [match.start() for match in re.finditer(r'<div[^>]+id=["\']customer_review-[^"\']+["\'][^>]*>', html_text, flags=re.I)]
+    if not starts:
+        starts = [match.start() for match in re.finditer(r'<div[^>]+data-hook=["\']review["\'][^>]*>', html_text, flags=re.I)]
+    starts = sorted(set(starts))
+    if not starts:
+        return []
+
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(html_text)
+        if end - start > 50000:
+            end = start + 50000
+        block = html_text[start:end]
+
+        text_candidates: list[str] = []
+        for pattern in [
+            r'<span[^>]+data-hook=["\']review-body["\'][^>]*>(.*?)</span>',
+            r'<div[^>]+data-hook=["\']review-collapsed["\'][^>]*>(.*?)</div>',
+            r'<span[^>]+class=["\'][^"\']*review-text-content[^"\']*["\'][^>]*>(.*?)</span>',
+            r'<div[^>]+class=["\'][^"\']*review-text-content[^"\']*["\'][^>]*>(.*?)</div>',
+        ]:
+            for raw in re.findall(pattern, block, flags=re.S | re.I):
+                cleaned = _clean_fragment(raw)
+                if len(cleaned) >= 3:
+                    text_candidates.append(cleaned)
+
+        text = max(text_candidates, key=len) if text_candidates else ""
+        if len(text) < 3:
+            continue
+
+        user = _clean_fragment(
+            _extract_first(
+                block,
+                [
+                    r'<span[^>]+class=["\'][^"\']*a-profile-name[^"\']*["\'][^>]*>(.*?)</span>',
+                    r'<a[^>]+data-hook=["\']review-author["\'][^>]*>(.*?)</a>',
+                    r'<span[^>]+data-hook=["\']review-author["\'][^>]*>(.*?)</span>',
+                ],
+            )
+        )
+        if not user:
+            user = "Anonymous"
+        user = re.sub(r"\s*verified purchase.*$", "", user, flags=re.I).strip() or "Anonymous"
+
+        rating_raw = _extract_first(
+            block,
+            [
+                r'<i[^>]+data-hook=["\']review-star-rating["\'][^>]*>(.*?)</i>',
+                r'<i[^>]+data-hook=["\']cmps-review-star-rating["\'][^>]*>(.*?)</i>',
+                r'<span[^>]+class=["\'][^"\']*a-icon-alt[^"\']*["\'][^>]*>(.*?)</span>',
+            ],
+        )
+        rating = _normalize_amazon_rating(rating_raw)
+
+        date_raw = _extract_first(block, [r'<span[^>]+data-hook=["\']review-date["\'][^>]*>(.*?)</span>'])
+        date = _normalize_amazon_date(date_raw)
+
+        review = ScrapedReview(text=text, user=user, date=date, rating=rating)
+        key = _review_identity(review)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        reviews.append(review)
+        if len(reviews) >= limit:
+            return reviews[:limit]
+
+    return reviews[:limit]
+
+
+def _normalize_amazon_date(raw: str) -> str:
+    date_text = _clean_fragment(raw)
+    if not date_text:
+        return ""
+    parts = re.split(r"\bon\b", date_text, flags=re.I)
+    if parts:
+        tail = parts[-1].strip(" .")
+        if tail:
+            return tail
+    return date_text
+
+
+def _normalize_amazon_rating(raw: str) -> str:
+    rating_text = _clean_fragment(raw)
+    if not rating_text:
+        return ""
+    match = re.search(r"(\d(?:[.,]\d)?)\s*out of 5", rating_text, flags=re.I)
+    if not match:
+        return rating_text
+    value = match.group(1).replace(",", ".")
+    if value.endswith(".0"):
+        value = value[:-2]
+    return f"{value} out of 5"
 
 
 def scrape_etsy(url: str, limit: int = 1000) -> list[ScrapedReview]:
