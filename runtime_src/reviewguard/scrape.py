@@ -31,10 +31,10 @@ API_INTEGRATION_PLATFORMS = {
     "amazon": "Amazon",
     "ebay": "eBay",
     "etsy": "Etsy",
-    "shopify": "Shopify",
     "walmart": "Walmart",
 }
 API_ENABLED_PLATFORMS = {
+    "shopify": "Shopify",
     "woocommerce": "WooCommerce",
 }
 
@@ -46,13 +46,15 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
 
     hint = _normalize_platform_hint(platform_hint)
     if hint in API_ENABLED_PLATFORMS:
+        if hint == "shopify":
+            return scrape_shopify(url, limit=limit)
         if hint == "woocommerce":
             return scrape_woocommerce(url, limit=limit)
     if hint in API_INTEGRATION_PLATFORMS:
         platform_name = API_INTEGRATION_PLATFORMS[hint]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. WooCommerce API mode is also supported."
+            "jumia.co.ke and kilimall.co.ke. Shopify and WooCommerce API modes are also supported."
         )
 
     platform = _detect_platform_from_host(host)
@@ -60,6 +62,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         return scrape_jumia(url, limit=limit)
     if platform == "kilimall":
         return scrape_kilimall(url, limit=limit)
+    if platform == "shopify":
+        return scrape_shopify(url, limit=limit)
     if platform == "woocommerce":
         return scrape_woocommerce(url, limit=limit)
 
@@ -67,7 +71,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[platform]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. WooCommerce API mode is also supported."
+            "jumia.co.ke and kilimall.co.ke. Shopify and WooCommerce API modes are also supported."
         )
 
     supported_hosts = ", ".join(f"{name}.co.ke" for name in URL_SCRAPE_ENABLED_PLATFORMS)
@@ -75,7 +79,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
     api_live = ", ".join(API_ENABLED_PLATFORMS.values())
     raise ValueError(
         f"Unsupported domain. Live URL scraping supports {supported_hosts}. "
-        f"Configured API-enabled platform: {api_live}. Configured API-only platforms: {api_only}."
+        f"Configured API-enabled platforms: {api_live}. Configured API-only platforms: {api_only}."
     )
 
 
@@ -106,6 +110,265 @@ def _detect_platform_from_host(host: str) -> str:
         if any(needle in host_norm for needle in needles):
             return platform
     return ""
+
+
+def scrape_shopify(url: str, limit: int = 1000) -> list[ScrapedReview]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Invalid Shopify URL. Use a full URL starting with https://")
+
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    handle = _extract_shopify_handle(parsed.path)
+    if not handle:
+        raise ValueError("Could not detect Shopify product handle from URL.")
+
+    # First try the product page JSON-LD (often includes review objects or review arrays).
+    try:
+        page_html = _fetch_html(url, timeout=20)
+    except Exception:
+        page_html = ""
+    if page_html:
+        reviews = _extract_reviews_from_jsonld(page_html, limit=limit)
+        if reviews:
+            return reviews[:limit]
+        reviews = _parse_shopify_review_blocks(page_html, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+    product_id = _resolve_shopify_product_id(base_url, handle)
+    page_size = min(100, max(10, limit))
+    query = urlencode({"limit": page_size, "page": 1})
+
+    candidates = [
+        f"{base_url}/products/{handle}?view=reviews",
+        f"{base_url}/products/{handle}/reviews?{query}",
+    ]
+    if product_id is not None:
+        judge_me_query = urlencode(
+            {
+                "shop_domain": parsed.netloc,
+                "product_id": product_id,
+                "per_page": page_size,
+                "page": 1,
+            }
+        )
+        candidates.append(f"{base_url}/apps/judgeme/reviews?{judge_me_query}")
+
+    errors: list[str] = []
+    for candidate in candidates:
+        try:
+            payload_text = _fetch_html(candidate, timeout=20)
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+        reviews = _parse_shopify_review_payload(payload_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+    if errors:
+        raise ValueError(f"Shopify review endpoints failed: {errors[0]}")
+    raise ValueError(
+        "No reviews found via Shopify public endpoints for this product. "
+        "Some stores require private app credentials for review access."
+    )
+
+
+def _extract_shopify_handle(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return ""
+
+    if "products" in parts:
+        idx = parts.index("products")
+        if idx + 1 < len(parts):
+            return parts[idx + 1].strip()
+
+    # Fallback: if URL path itself looks like a handle.
+    last = parts[-1].strip()
+    if last and not last.isdigit():
+        return re.sub(r"\.(html?|php)$", "", last, flags=re.I)
+    return ""
+
+
+def _resolve_shopify_product_id(base_url: str, handle: str) -> int | None:
+    endpoint = f"{base_url}/products/{handle}.js"
+    try:
+        payload = _fetch_json_any(endpoint, timeout=20, retries=1)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw_id = payload.get("id")
+    if isinstance(raw_id, int):
+        return raw_id
+    if isinstance(raw_id, str) and raw_id.isdigit():
+        return int(raw_id)
+    return None
+
+
+def _parse_shopify_review_payload(payload_text: str, limit: int = 1000) -> list[ScrapedReview]:
+    if not payload_text.strip():
+        return []
+
+    stripped = payload_text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            blob = json.loads(payload_text)
+        except Exception:
+            blob = None
+        if blob is not None:
+            reviews = _reviews_from_api_blob(blob, limit=limit)
+            if reviews:
+                return reviews[:limit]
+            if isinstance(blob, dict):
+                for key in ("html", "reviews_html", "widget"):
+                    html_blob = blob.get(key)
+                    if isinstance(html_blob, str) and html_blob.strip():
+                        reviews = _parse_shopify_review_blocks(html_blob, limit=limit)
+                        if reviews:
+                            return reviews[:limit]
+
+    reviews = _extract_reviews_from_jsonld(payload_text, limit=limit)
+    if reviews:
+        return reviews[:limit]
+
+    reviews = _parse_shopify_review_blocks(payload_text, limit=limit)
+    return reviews[:limit]
+
+
+def _reviews_from_api_blob(blob, limit: int = 1000) -> list[ScrapedReview]:
+    items = _collect_review_items_from_blob(blob)
+    if not items:
+        return []
+
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+    for item in items:
+        review = _review_from_api_item(item)
+        key = _review_identity(review) if review else ""
+        if review and key and key not in seen:
+            seen.add(key)
+            reviews.append(review)
+            if len(reviews) >= limit:
+                break
+    return reviews[:limit]
+
+
+def _collect_review_items_from_blob(blob) -> list[dict]:
+    if isinstance(blob, list):
+        return [item for item in blob if isinstance(item, dict)]
+    if not isinstance(blob, dict):
+        return []
+
+    candidates = []
+    for key in ("reviews", "items", "results", "comments", "data"):
+        value = blob.get(key)
+        if isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, dict))
+        if isinstance(value, dict):
+            for inner in ("reviews", "items", "results", "comments"):
+                inner_value = value.get(inner)
+                if isinstance(inner_value, list):
+                    candidates.extend(item for item in inner_value if isinstance(item, dict))
+    return candidates
+
+
+def _review_from_api_item(item: dict) -> ScrapedReview | None:
+    title = str(item.get("title") or "").strip()
+    body = str(
+        item.get("review")
+        or item.get("reviewBody")
+        or item.get("content")
+        or item.get("body")
+        or item.get("text")
+        or item.get("message")
+        or ""
+    ).strip()
+    text = ". ".join(part for part in [title, body] if part).strip()
+    text = _clean_fragment(text)
+    if len(text) < 3:
+        return None
+
+    user = item.get("reviewer") or item.get("author_name") or item.get("author") or item.get("name") or "Anonymous"
+    if isinstance(user, dict):
+        user = user.get("name") or user.get("nickname") or "Anonymous"
+    user_text = str(user).strip() or "Anonymous"
+
+    date_raw = (
+        item.get("date_created_gmt")
+        or item.get("date_created")
+        or item.get("date_published")
+        or item.get("created_at")
+        or item.get("created")
+        or item.get("date")
+        or ""
+    )
+    date_text = str(date_raw).strip()
+    if "T" in date_text:
+        date_text = date_text.split("T", 1)[0]
+
+    rating_raw = item.get("rating") or item.get("score") or item.get("stars") or ""
+    rating_text = str(rating_raw).strip()
+    if rating_text.endswith(".0"):
+        rating_text = rating_text[:-2]
+    rating = f"{rating_text} out of 5" if rating_text else ""
+
+    return ScrapedReview(text=text, user=user_text, date=date_text, rating=rating)
+
+
+def _parse_shopify_review_blocks(html_text: str, limit: int = 1000) -> list[ScrapedReview]:
+    # Capture common review widgets (Shopify Product Reviews, Judge.me, Okendo).
+    patterns = [
+        r"<li[^>]+class=[\"'][^\"']*(?:spr-review|jdgm-rev|okeReviews)[^\"']*[\"'][^>]*>(.*?)</li>",
+        r"<div[^>]+class=[\"'][^\"']*(?:spr-review|jdgm-rev|okeReviews)[^\"']*[\"'][^>]*>(.*?)</div>",
+    ]
+
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        blocks = re.findall(pattern, html_text, flags=re.S | re.I)
+        for block in blocks:
+            text = _clean_fragment(
+                _extract_first(
+                    block,
+                    [
+                        r"<[^>]+class=['\"][^'\"]*(?:spr-review-content-body|jdgm-rev__body|okeReviews-review-body)[^'\"]*['\"][^>]*>(.*?)</[^>]+>",
+                        r"<p[^>]*>(.*?)</p>",
+                    ],
+                )
+            )
+            if len(text) < 3:
+                continue
+
+            user = _clean_fragment(
+                _extract_first(
+                    block,
+                    [
+                        r"<[^>]+class=['\"][^'\"]*(?:spr-review-header-byline|jdgm-rev__author|okeReviews-review-author)[^'\"]*['\"][^>]*>(.*?)</[^>]+>",
+                    ],
+                )
+            )
+            if not user:
+                user = "Anonymous"
+
+            rating_match = re.search(r"(\d(?:\.\d)?)\s*(?:out of 5|stars?)", _clean_fragment(block), flags=re.I)
+            rating = ""
+            if rating_match:
+                rating = f"{rating_match.group(1)} out of 5"
+
+            date_match = re.search(r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", _clean_fragment(block))
+            date = date_match.group(1) if date_match else ""
+
+            review = ScrapedReview(text=text, user=user, date=date, rating=rating)
+            key = _review_identity(review)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            reviews.append(review)
+            if len(reviews) >= limit:
+                return reviews[:limit]
+
+    return reviews[:limit]
 
 
 def scrape_woocommerce(url: str, limit: int = 1000) -> list[ScrapedReview]:
