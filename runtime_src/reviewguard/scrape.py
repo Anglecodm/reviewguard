@@ -29,11 +29,11 @@ class ScrapedReview:
 URL_SCRAPE_ENABLED_PLATFORMS = ("jumia", "kilimall")
 API_INTEGRATION_PLATFORMS = {
     "amazon": "Amazon",
-    "ebay": "eBay",
     "etsy": "Etsy",
     "walmart": "Walmart",
 }
 API_ENABLED_PLATFORMS = {
+    "ebay": "eBay",
     "shopify": "Shopify",
     "woocommerce": "WooCommerce",
 }
@@ -46,6 +46,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
 
     hint = _normalize_platform_hint(platform_hint)
     if hint in API_ENABLED_PLATFORMS:
+        if hint == "ebay":
+            return scrape_ebay(url, limit=limit)
         if hint == "shopify":
             return scrape_shopify(url, limit=limit)
         if hint == "woocommerce":
@@ -54,7 +56,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[hint]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. Shopify and WooCommerce API modes are also supported."
+            "jumia.co.ke and kilimall.co.ke. eBay, Shopify and WooCommerce API modes are also supported."
         )
 
     platform = _detect_platform_from_host(host)
@@ -62,6 +64,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         return scrape_jumia(url, limit=limit)
     if platform == "kilimall":
         return scrape_kilimall(url, limit=limit)
+    if platform == "ebay":
+        return scrape_ebay(url, limit=limit)
     if platform == "shopify":
         return scrape_shopify(url, limit=limit)
     if platform == "woocommerce":
@@ -71,7 +75,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[platform]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. Shopify and WooCommerce API modes are also supported."
+            "jumia.co.ke and kilimall.co.ke. eBay, Shopify and WooCommerce API modes are also supported."
         )
 
     supported_hosts = ", ".join(f"{name}.co.ke" for name in URL_SCRAPE_ENABLED_PLATFORMS)
@@ -110,6 +114,235 @@ def _detect_platform_from_host(host: str) -> str:
         if any(needle in host_norm for needle in needles):
             return platform
     return ""
+
+
+def scrape_ebay(url: str, limit: int = 1000) -> list[ScrapedReview]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Invalid eBay URL. Use a full URL starting with https://")
+
+    html_errors: list[str] = []
+    interruption_hits = 0
+    review_pages: list[str] = []
+
+    for candidate in _ebay_candidate_urls(url):
+        try:
+            html_text = _fetch_html(candidate, timeout=20)
+        except Exception as exc:
+            html_errors.append(str(exc))
+            continue
+
+        if _is_ebay_interruption_page(html_text):
+            interruption_hits += 1
+            continue
+
+        reviews = _extract_reviews_from_jsonld(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+        reviews = _parse_ebay_review_blocks(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+        review_pages.extend(_extract_ebay_review_links(html_text, candidate))
+
+    for review_url in list(dict.fromkeys(review_pages)):
+        try:
+            html_text = _fetch_html(review_url, timeout=20)
+        except Exception as exc:
+            html_errors.append(str(exc))
+            continue
+
+        if _is_ebay_interruption_page(html_text):
+            interruption_hits += 1
+            continue
+
+        reviews = _extract_reviews_from_jsonld(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+        reviews = _parse_ebay_review_blocks(html_text, limit=limit)
+        if reviews:
+            return reviews[:limit]
+
+    if interruption_hits > 0:
+        raise ValueError(
+            "eBay blocked this request (Pardon our interruption). "
+            "Try again later, switch eBay locale URL (for example .co.uk), or use API credentials."
+        )
+    if html_errors:
+        raise ValueError(f"eBay review endpoints failed: {html_errors[0]}")
+    raise ValueError("No reviews found on public eBay endpoints for this item.")
+
+
+def _ebay_candidate_urls(url: str) -> list[str]:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path or ""
+    query = f"?{parsed.query}" if parsed.query else ""
+
+    urls = [url]
+    item_id = _extract_ebay_item_id(url)
+    if item_id:
+        for domain in ("www.ebay.com", "www.ebay.co.uk", "www.ebay.de"):
+            candidate = f"https://{domain}/itm/{item_id}"
+            if query:
+                candidate = f"{candidate}{query}"
+            urls.append(candidate)
+    elif "ebay.com" in host and path:
+        for domain in ("www.ebay.co.uk", "www.ebay.de"):
+            urls.append(f"https://{domain}{path}{query}")
+
+    # Preserve order but dedupe.
+    return list(dict.fromkeys(urls))
+
+
+def _extract_ebay_item_id(url: str) -> str:
+    for pattern in [
+        r"/itm/(?:[^/]+/)?(\d{9,15})",
+        r"(?:^|[?&])item=(\d{9,15})",
+    ]:
+        match = re.search(pattern, url, flags=re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _is_ebay_interruption_page(html_text: str) -> bool:
+    lower = html_text.lower()
+    return "pardon our interruption" in lower or "pardon our interruption..." in lower
+
+
+def _extract_ebay_review_links(html_text: str, base_url: str) -> list[str]:
+    links: list[str] = []
+    # Typical eBay product review pages include /urw/.../product-reviews/....
+    patterns = [
+        r'https?://[^"\s<>]*product-reviews[^"\s<>]*',
+        r'/urw/[^"\s<>]*product-reviews[^"\s<>]*',
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, html_text, flags=re.I):
+            clean = html.unescape(match.strip())
+            if clean.startswith("/"):
+                clean = urljoin(base_url, clean)
+            links.append(clean)
+    return links
+
+
+def _parse_ebay_review_blocks(html_text: str, limit: int = 1000) -> list[ScrapedReview]:
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+
+    # eBay review pages vary by template; keep patterns broad but guarded by text/rating checks.
+    patterns = [
+        r'<li[^>]+class=["\'][^"\']*(?:review|rvw|ebay-review)[^"\']*["\'][^>]*>(.*?)</li>',
+        r'<div[^>]+class=["\'][^"\']*(?:review|rvw|ebay-review)[^"\']*["\'][^>]*>(.*?)</div>',
+    ]
+    blocks: list[str] = []
+    for pattern in patterns:
+        blocks.extend(re.findall(pattern, html_text, flags=re.S | re.I))
+
+    # Fallback for pages where reviews are rendered as generic article cards.
+    if not blocks:
+        blocks.extend(re.findall(r"<article[^>]*>(.*?)</article>", html_text, flags=re.S | re.I))
+
+    for block in blocks:
+        plain = _clean_fragment(block)
+        if len(plain) < 8:
+            continue
+
+        rating = ""
+        rating_match = re.search(r"(\d(?:\.\d)?)\s*(?:out of 5|stars?)", plain, flags=re.I)
+        if rating_match:
+            rating = f"{rating_match.group(1)} out of 5"
+
+        text = _clean_fragment(
+            _extract_first(
+                block,
+                [
+                    r"<p[^>]*>(.*?)</p>",
+                    r'<div[^>]+class=["\'][^"\']*(?:content|body|text)[^"\']*["\'][^>]*>(.*?)</div>',
+                ],
+            )
+        )
+        if len(text) < 5:
+            # Fallback to plain block after removing obvious metadata tokens.
+            text = plain
+            for token in ["verified purchase", "helpful", "report abuse"]:
+                text = re.sub(token, " ", text, flags=re.I)
+            text = re.sub(r"\s+", " ", text).strip()
+        if len(text) < 5:
+            continue
+
+        user = _clean_fragment(
+            _extract_first(
+                block,
+                [
+                    r'<[^>]+class=["\'][^"\']*(?:author|user|reviewer)[^"\']*["\'][^>]*>(.*?)</[^>]+>',
+                ],
+            )
+        )
+        if not user:
+            user = "Anonymous"
+
+        date_match = re.search(r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", plain)
+        date = date_match.group(1) if date_match else ""
+
+        review = ScrapedReview(text=text, user=user, date=date, rating=rating)
+        key = _review_identity(review)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        reviews.append(review)
+        if len(reviews) >= limit:
+            return reviews[:limit]
+
+    if reviews:
+        return reviews[:limit]
+
+    # Fallback: pull review-like paragraphs whose nearby context contains rating hints.
+    for match in re.finditer(r"<p[^>]*>(.*?)</p>", html_text, flags=re.S | re.I):
+        text = _clean_fragment(match.group(1))
+        if len(text) < 5:
+            continue
+
+        start = max(0, match.start() - 260)
+        end = min(len(html_text), match.end() + 260)
+        context_html = html_text[start:end]
+        context_plain = _clean_fragment(context_html)
+
+        rating = ""
+        rating_match = re.search(r"(\d(?:\.\d)?)\s*(?:out of 5|stars?)", context_plain, flags=re.I)
+        if rating_match:
+            rating = f"{rating_match.group(1)} out of 5"
+
+        if not rating and "review" not in context_plain.lower():
+            continue
+
+        user = _clean_fragment(
+            _extract_first(
+                context_html,
+                [
+                    r'<[^>]+class=["\'][^"\']*(?:author|user|reviewer)[^"\']*["\'][^>]*>(.*?)</[^>]+>',
+                ],
+            )
+        )
+        if not user:
+            user = "Anonymous"
+
+        date_match = re.search(r"\b(\d{4}-\d{2}-\d{2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b", context_plain)
+        date = date_match.group(1) if date_match else ""
+
+        review = ScrapedReview(text=text, user=user, date=date, rating=rating)
+        key = _review_identity(review)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        reviews.append(review)
+        if len(reviews) >= limit:
+            return reviews[:limit]
+
+    return reviews[:limit]
 
 
 def scrape_shopify(url: str, limit: int = 1000) -> list[ScrapedReview]:
