@@ -59,8 +59,13 @@ def scrape_jumia(url: str, limit: int = 1000) -> list[ScrapedReview]:
 
 def scrape_kilimall(url: str, limit: int = 1000) -> list[ScrapedReview]:
     listing_id = _extract_kilimall_listing_id(url)
+    api_error: Exception | None = None
     if listing_id:
-        reviews = _fetch_all_kilimall_reviews(listing_id, limit=limit)
+        try:
+            reviews = _fetch_all_kilimall_reviews(listing_id, limit=limit)
+        except Exception as exc:
+            reviews = []
+            api_error = exc
         if reviews:
             return reviews[:limit]
 
@@ -81,7 +86,11 @@ def scrape_kilimall(url: str, limit: int = 1000) -> list[ScrapedReview]:
     if not listing_id:
         listing_id = _extract_kilimall_listing_id_from_html(html)
         if listing_id:
-            reviews = _fetch_all_kilimall_reviews(listing_id, limit=limit)
+            try:
+                reviews = _fetch_all_kilimall_reviews(listing_id, limit=limit)
+            except Exception as exc:
+                reviews = []
+                api_error = api_error or exc
             if reviews:
                 return reviews[:limit]
 
@@ -93,10 +102,23 @@ def scrape_kilimall(url: str, limit: int = 1000) -> list[ScrapedReview]:
         return reviews[:limit]
     # Do not fall back to generic page text; that causes product metadata
     # to be misclassified as customer reviews.
+    if api_error and listing_id:
+        stats = _fetch_kilimall_comment_stats(listing_id)
+        total = 0
+        if isinstance(stats, dict):
+            try:
+                total = int(stats.get("totalNum") or 0)
+            except Exception:
+                total = 0
+        if total > 0:
+            raise RuntimeError(
+                f"Kilimall listing has {total} reviews, but comments API fetch failed: {api_error}"
+            )
+        raise RuntimeError(f"Kilimall comments API fetch failed: {api_error}")
     return []
 
 
-def _fetch_html(url: str) -> str:
+def _fetch_html(url: str, timeout: int = 12) -> str:
     req = Request(
         url,
         headers={
@@ -107,16 +129,24 @@ def _fetch_html(url: str) -> str:
             )
         },
     )
-    with urlopen(req, timeout=12) as resp:
+    with urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="ignore")
 
 
-def _fetch_json(url: str) -> dict:
-    payload = _fetch_html(url)
-    data = json.loads(payload)
-    if not isinstance(data, dict):
-        raise ValueError("Expected JSON object payload.")
-    return data
+def _fetch_json(url: str, timeout: int = 12, retries: int = 0) -> dict:
+    last_exc: Exception | None = None
+    attempts = max(1, retries + 1)
+    for _ in range(attempts):
+        try:
+            payload = _fetch_html(url, timeout=timeout)
+            data = json.loads(payload)
+            if not isinstance(data, dict):
+                raise ValueError("Expected JSON object payload.")
+            return data
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.35)
+    raise RuntimeError(f"Failed JSON request for {url}: {last_exc}")
 
 
 def _parse_jumia_reviews(html: str, limit: int = 1000) -> list[ScrapedReview]:
@@ -181,6 +211,8 @@ def _fetch_all_kilimall_reviews(listing_id: str, limit: int = 1000) -> list[Scra
 
     reviews: list[ScrapedReview] = []
     seen: set[str] = set()
+    last_exc: Exception | None = None
+    malformed_payload = False
     offset = 0
     page_size = min(50, max(10, limit))
 
@@ -193,12 +225,14 @@ def _fetch_all_kilimall_reviews(listing_id: str, limit: int = 1000) -> list[Scra
             "&order_by=normal"
         )
         try:
-            response = _fetch_json(api_url)
-        except Exception:
+            response = _fetch_json(api_url, timeout=20, retries=1)
+        except Exception as exc:
+            last_exc = exc
             break
 
         data = response.get("data") if isinstance(response, dict) else None
         if not isinstance(data, dict):
+            malformed_payload = True
             break
         items = data.get("items")
         if not isinstance(items, list) or not items:
@@ -245,6 +279,11 @@ def _fetch_all_kilimall_reviews(listing_id: str, limit: int = 1000) -> list[Scra
         if isinstance(total, int) and offset >= total:
             break
 
+    if not reviews:
+        if last_exc:
+            raise RuntimeError(last_exc)
+        if malformed_payload:
+            raise RuntimeError("Unexpected Kilimall comments payload shape.")
     return reviews[:limit]
 
 
@@ -257,6 +296,18 @@ def _extract_kilimall_listing_id_from_html(html_text: str) -> str | None:
             r'"listing_id"\s*:\s*"?(\d{6,})"?',
         ],
     ) or None
+
+
+def _fetch_kilimall_comment_stats(listing_id: str) -> dict | None:
+    url = f"https://mall-api.kilimall.com/listing-comment-statistics/{listing_id}"
+    try:
+        payload = _fetch_json(url, timeout=20, retries=1)
+    except Exception:
+        return None
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return data
+    return None
 
 
 def _kilimall_comment_text(base: dict, content: dict) -> str:
