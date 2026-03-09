@@ -462,7 +462,7 @@ def home():
               <option value="ebay">Platform: eBay (API)</option>
               <option value="etsy">Platform: Etsy (API)</option>
               <option value="shopify">Platform: Shopify (API)</option>
-              <option value="woocommerce">Platform: WooCommerce (API)</option>
+              <option value="woocommerce">Platform: WooCommerce (API Live)</option>
               <option value="walmart">Platform: Walmart (API)</option>
             </select>
             <select id="windowSelect">
@@ -472,7 +472,7 @@ def home():
             </select>
             <button class="btn" onclick="scanUrl()">Scan URL</button>
           </div>
-          <div class="muted">Live URL scraping: Jumia + Kilimall. API platforms are listed for integration setup.</div>
+          <div class="muted">Live URL scraping: Jumia + Kilimall. WooCommerce API mode is live. Other API platforms require integration setup.</div>
           <div class="muted" id="scanStatus">Paste a URL and press Scan.</div>
           <div class="muted" id="finalVerdictSummary">Final Verdict: -</div>
         </section>

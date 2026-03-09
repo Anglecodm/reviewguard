@@ -32,8 +32,10 @@ API_INTEGRATION_PLATFORMS = {
     "ebay": "eBay",
     "etsy": "Etsy",
     "shopify": "Shopify",
-    "woocommerce": "WooCommerce",
     "walmart": "Walmart",
+}
+API_ENABLED_PLATFORMS = {
+    "woocommerce": "WooCommerce",
 }
 
 
@@ -43,11 +45,14 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         raise ValueError("Invalid URL. Paste a full product URL starting with https://")
 
     hint = _normalize_platform_hint(platform_hint)
+    if hint in API_ENABLED_PLATFORMS:
+        if hint == "woocommerce":
+            return scrape_woocommerce(url, limit=limit)
     if hint in API_INTEGRATION_PLATFORMS:
         platform_name = API_INTEGRATION_PLATFORMS[hint]
         raise ValueError(
-            f"{platform_name} requires API integration. URL scraping is currently enabled for "
-            "jumia.co.ke and kilimall.co.ke."
+            f"{platform_name} requires API integration. Live URL scraping is enabled for "
+            "jumia.co.ke and kilimall.co.ke. WooCommerce API mode is also supported."
         )
 
     platform = _detect_platform_from_host(host)
@@ -55,19 +60,22 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         return scrape_jumia(url, limit=limit)
     if platform == "kilimall":
         return scrape_kilimall(url, limit=limit)
+    if platform == "woocommerce":
+        return scrape_woocommerce(url, limit=limit)
 
     if platform in API_INTEGRATION_PLATFORMS:
         platform_name = API_INTEGRATION_PLATFORMS[platform]
         raise ValueError(
-            f"{platform_name} requires API integration. URL scraping is currently enabled for "
-            "jumia.co.ke and kilimall.co.ke."
+            f"{platform_name} requires API integration. Live URL scraping is enabled for "
+            "jumia.co.ke and kilimall.co.ke. WooCommerce API mode is also supported."
         )
 
     supported_hosts = ", ".join(f"{name}.co.ke" for name in URL_SCRAPE_ENABLED_PLATFORMS)
     api_only = ", ".join(API_INTEGRATION_PLATFORMS.values())
+    api_live = ", ".join(API_ENABLED_PLATFORMS.values())
     raise ValueError(
         f"Unsupported domain. Live URL scraping supports {supported_hosts}. "
-        f"Configured API-only platforms in console: {api_only}."
+        f"Configured API-enabled platform: {api_live}. Configured API-only platforms: {api_only}."
     )
 
 
@@ -98,6 +106,205 @@ def _detect_platform_from_host(host: str) -> str:
         if any(needle in host_norm for needle in needles):
             return platform
     return ""
+
+
+def scrape_woocommerce(url: str, limit: int = 1000) -> list[ScrapedReview]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Invalid WooCommerce URL. Use a full URL starting with https://")
+
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    product_id = _extract_woocommerce_product_id_from_url(url)
+    if product_id is None:
+        slug = _extract_woocommerce_slug(parsed.path)
+        if not slug:
+            raise ValueError("Could not detect WooCommerce product slug from URL.")
+        product_id = _resolve_woocommerce_product_id(base_url, slug)
+
+    if product_id is None:
+        raise ValueError("Could not resolve WooCommerce product ID via Store API.")
+
+    errors: list[str] = []
+
+    try:
+        reviews = _fetch_woocommerce_store_reviews(base_url, product_id, limit=limit)
+    except Exception as exc:
+        reviews = []
+        errors.append(str(exc))
+    if reviews:
+        return reviews[:limit]
+
+    try:
+        reviews = _fetch_woocommerce_wp_reviews(base_url, product_id, limit=limit)
+    except Exception as exc:
+        reviews = []
+        errors.append(str(exc))
+    if reviews:
+        return reviews[:limit]
+
+    if errors:
+        raise ValueError(f"WooCommerce review APIs failed: {errors[0]}")
+    raise ValueError("No reviews found via WooCommerce APIs for this product.")
+
+
+def _extract_woocommerce_product_id_from_url(url: str) -> int | None:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query))
+    for key in ("product_id", "post", "p"):
+        raw = str(query.get(key) or "").strip()
+        if raw.isdigit():
+            return int(raw)
+    return None
+
+
+def _extract_woocommerce_slug(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return ""
+
+    slug = ""
+    if "product" in parts:
+        idx = parts.index("product")
+        if idx + 1 < len(parts):
+            slug = parts[idx + 1]
+    if not slug:
+        slug = parts[-1]
+
+    slug = slug.strip().strip("/")
+    slug = re.sub(r"\.(html?|php)$", "", slug, flags=re.I)
+    if not slug or slug.isdigit():
+        return ""
+    return slug
+
+
+def _resolve_woocommerce_product_id(base_url: str, slug: str) -> int | None:
+    query = urlencode({"slug": slug, "per_page": 1})
+    store_url = f"{base_url}/wp-json/wc/store/v1/products?{query}"
+    try:
+        payload = _fetch_json_any(store_url, timeout=20, retries=1)
+    except Exception:
+        payload = None
+    product_id = _extract_product_id_from_payload(payload)
+    if product_id is not None:
+        return product_id
+
+    wp_url = f"{base_url}/wp-json/wp/v2/product?{query}"
+    try:
+        payload = _fetch_json_any(wp_url, timeout=20, retries=1)
+    except Exception:
+        payload = None
+    return _extract_product_id_from_payload(payload)
+
+
+def _extract_product_id_from_payload(payload) -> int | None:
+    if isinstance(payload, list) and payload:
+        first = payload[0]
+        if isinstance(first, dict):
+            raw_id = first.get("id")
+            if isinstance(raw_id, int):
+                return raw_id
+            if isinstance(raw_id, str) and raw_id.isdigit():
+                return int(raw_id)
+    return None
+
+
+def _fetch_woocommerce_store_reviews(base_url: str, product_id: int, limit: int = 1000) -> list[ScrapedReview]:
+    if limit <= 0:
+        return []
+
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+    page = 1
+    page_size = min(100, max(10, limit))
+
+    while len(reviews) < limit:
+        query = urlencode({"product_id": product_id, "per_page": page_size, "page": page})
+        api_url = f"{base_url}/wp-json/wc/store/v1/products/reviews?{query}"
+        payload = _fetch_json_any(api_url, timeout=20, retries=1)
+        if not isinstance(payload, list) or not payload:
+            break
+
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            text = _clean_fragment(str(item.get("review") or item.get("content") or ""))
+            if len(text) < 3:
+                continue
+
+            user = str(item.get("reviewer") or item.get("author_name") or "Anonymous").strip() or "Anonymous"
+            date_raw = str(item.get("date_created_gmt") or item.get("date_created") or item.get("date") or "")
+            date = date_raw.split("T", 1)[0] if "T" in date_raw else date_raw
+
+            rating_val = item.get("rating")
+            rating = ""
+            if rating_val is not None and str(rating_val).strip():
+                rating_text = str(rating_val).strip()
+                if rating_text.endswith(".0"):
+                    rating_text = rating_text[:-2]
+                rating = f"{rating_text} out of 5"
+
+            review = ScrapedReview(text=text, user=user, date=date, rating=rating)
+            key = _review_identity(review)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            reviews.append(review)
+            if len(reviews) >= limit:
+                return reviews[:limit]
+
+        if len(payload) < page_size:
+            break
+        page += 1
+
+    return reviews[:limit]
+
+
+def _fetch_woocommerce_wp_reviews(base_url: str, product_id: int, limit: int = 1000) -> list[ScrapedReview]:
+    if limit <= 0:
+        return []
+
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+    page = 1
+    page_size = min(100, max(10, limit))
+
+    while len(reviews) < limit:
+        query = urlencode({"post": product_id, "per_page": page_size, "page": page})
+        api_url = f"{base_url}/wp-json/wp/v2/comments?{query}"
+        payload = _fetch_json_any(api_url, timeout=20, retries=1)
+        if not isinstance(payload, list) or not payload:
+            break
+
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, dict):
+                raw_text = str(content.get("rendered") or "")
+            else:
+                raw_text = str(content or "")
+            text = _clean_fragment(raw_text)
+            if len(text) < 3:
+                continue
+
+            user = str(item.get("author_name") or "Anonymous").strip() or "Anonymous"
+            date_raw = str(item.get("date_gmt") or item.get("date") or "")
+            date = date_raw.split("T", 1)[0] if "T" in date_raw else date_raw
+            review = ScrapedReview(text=text, user=user, date=date)
+
+            key = _review_identity(review)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            reviews.append(review)
+            if len(reviews) >= limit:
+                return reviews[:limit]
+
+        if len(payload) < page_size:
+            break
+        page += 1
+
+    return reviews[:limit]
 
 
 def scrape_jumia(url: str, limit: int = 1000) -> list[ScrapedReview]:
@@ -198,20 +405,24 @@ def _fetch_html(url: str, timeout: int = 12) -> str:
         return resp.read().decode("utf-8", errors="ignore")
 
 
-def _fetch_json(url: str, timeout: int = 12, retries: int = 0) -> dict:
+def _fetch_json_any(url: str, timeout: int = 12, retries: int = 0):
     last_exc: Exception | None = None
     attempts = max(1, retries + 1)
     for _ in range(attempts):
         try:
             payload = _fetch_html(url, timeout=timeout)
-            data = json.loads(payload)
-            if not isinstance(data, dict):
-                raise ValueError("Expected JSON object payload.")
-            return data
+            return json.loads(payload)
         except Exception as exc:
             last_exc = exc
             time.sleep(0.35)
     raise RuntimeError(f"Failed JSON request for {url}: {last_exc}")
+
+
+def _fetch_json(url: str, timeout: int = 12, retries: int = 0) -> dict:
+    data = _fetch_json_any(url, timeout=timeout, retries=retries)
+    if not isinstance(data, dict):
+        raise ValueError("Expected JSON object payload.")
+    return data
 
 
 def _parse_jumia_reviews(html: str, limit: int = 1000) -> list[ScrapedReview]:
