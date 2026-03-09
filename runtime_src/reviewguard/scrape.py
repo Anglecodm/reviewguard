@@ -26,13 +26,78 @@ class ScrapedReview:
     rating: str = ""
 
 
-def scrape_reviews(url: str, limit: int = 1000) -> list[ScrapedReview]:
-    host = urlparse(url).netloc.lower()
-    if "jumia" in host:
+URL_SCRAPE_ENABLED_PLATFORMS = ("jumia", "kilimall")
+API_INTEGRATION_PLATFORMS = {
+    "amazon": "Amazon",
+    "ebay": "eBay",
+    "etsy": "Etsy",
+    "shopify": "Shopify",
+    "woocommerce": "WooCommerce",
+    "walmart": "Walmart",
+}
+
+
+def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None) -> list[ScrapedReview]:
+    host = urlparse(url).netloc.lower().strip()
+    if not host:
+        raise ValueError("Invalid URL. Paste a full product URL starting with https://")
+
+    hint = _normalize_platform_hint(platform_hint)
+    if hint in API_INTEGRATION_PLATFORMS:
+        platform_name = API_INTEGRATION_PLATFORMS[hint]
+        raise ValueError(
+            f"{platform_name} requires API integration. URL scraping is currently enabled for "
+            "jumia.co.ke and kilimall.co.ke."
+        )
+
+    platform = _detect_platform_from_host(host)
+    if platform == "jumia":
         return scrape_jumia(url, limit=limit)
-    if "kilimall" in host:
+    if platform == "kilimall":
         return scrape_kilimall(url, limit=limit)
-    raise ValueError("Unsupported domain. Supported: jumia.co.ke, kilimall.co.ke")
+
+    if platform in API_INTEGRATION_PLATFORMS:
+        platform_name = API_INTEGRATION_PLATFORMS[platform]
+        raise ValueError(
+            f"{platform_name} requires API integration. URL scraping is currently enabled for "
+            "jumia.co.ke and kilimall.co.ke."
+        )
+
+    supported_hosts = ", ".join(f"{name}.co.ke" for name in URL_SCRAPE_ENABLED_PLATFORMS)
+    api_only = ", ".join(API_INTEGRATION_PLATFORMS.values())
+    raise ValueError(
+        f"Unsupported domain. Live URL scraping supports {supported_hosts}. "
+        f"Configured API-only platforms in console: {api_only}."
+    )
+
+
+def _normalize_platform_hint(platform_hint: str | None) -> str:
+    if not platform_hint:
+        return ""
+    hint = platform_hint.strip().lower()
+    if hint.startswith("platform:"):
+        hint = hint.split(":", 1)[1].strip()
+    return hint
+
+
+def _detect_platform_from_host(host: str) -> str:
+    host_norm = host.lower()
+    if "jumia" in host_norm:
+        return "jumia"
+    if "kilimall" in host_norm:
+        return "kilimall"
+    checks = {
+        "amazon": ("amazon.", "amzn.to"),
+        "ebay": ("ebay.",),
+        "etsy": ("etsy.",),
+        "shopify": ("myshopify.com", "shopify."),
+        "woocommerce": ("woocommerce.com",),
+        "walmart": ("walmart.",),
+    }
+    for platform, needles in checks.items():
+        if any(needle in host_norm for needle in needles):
+            return platform
+    return ""
 
 
 def scrape_jumia(url: str, limit: int = 1000) -> list[ScrapedReview]:

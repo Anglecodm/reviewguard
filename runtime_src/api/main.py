@@ -44,6 +44,7 @@ class IngestRequest(BaseModel):
     url: str
     limit: Optional[int] = 1000
     threshold: Optional[float] = None
+    platform: Optional[str] = "auto"
 
 
 @app.get("/health")
@@ -454,11 +455,15 @@ def home():
           <div class="filter-row">
             <input id="storeUrl" type="url" placeholder="Paste e-commerce URL e.g. https://www.jumia.co.ke/product/..." />
             <select id="platformSelect">
-              <option>Platform: Auto</option>
-              <option>Platform: Jumia</option>
-              <option>Platform: Amazon</option>
-              <option>Platform: eBay</option>
-              <option>Platform: Shopify</option>
+              <option value="auto">Platform: Auto</option>
+              <option value="jumia">Platform: Jumia (Live)</option>
+              <option value="kilimall">Platform: Kilimall (Live)</option>
+              <option value="amazon">Platform: Amazon (API)</option>
+              <option value="ebay">Platform: eBay (API)</option>
+              <option value="etsy">Platform: Etsy (API)</option>
+              <option value="shopify">Platform: Shopify (API)</option>
+              <option value="woocommerce">Platform: WooCommerce (API)</option>
+              <option value="walmart">Platform: Walmart (API)</option>
             </select>
             <select id="windowSelect">
               <option>Window: Last 7 Days</option>
@@ -467,6 +472,7 @@ def home():
             </select>
             <button class="btn" onclick="scanUrl()">Scan URL</button>
           </div>
+          <div class="muted">Live URL scraping: Jumia + Kilimall. API platforms are listed for integration setup.</div>
           <div class="muted" id="scanStatus">Paste a URL and press Scan.</div>
           <div class="muted" id="finalVerdictSummary">Final Verdict: -</div>
         </section>
@@ -559,6 +565,7 @@ def home():
 
       async function scanUrl() {
         const url = document.getElementById("storeUrl").value.trim();
+        const platform = document.getElementById("platformSelect").value;
         if (!url) {
           alert("Paste an e-commerce URL first.");
           return;
@@ -567,7 +574,7 @@ def home():
         const res = await fetch("/ingest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, limit: 1000 })
+          body: JSON.stringify({ url, limit: 1000, platform })
         });
         const data = await res.json();
         if (data.error) {
@@ -715,7 +722,7 @@ def ingest(request: IngestRequest):
 
     error = None
     try:
-        scraped = scrape_reviews(request.url, limit=limit)
+        scraped = scrape_reviews(request.url, limit=limit, platform_hint=request.platform)
         rows = [item.text for item in scraped]
     except Exception as exc:
         rows = []
