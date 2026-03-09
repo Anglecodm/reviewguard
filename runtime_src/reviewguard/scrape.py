@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -29,11 +30,11 @@ class ScrapedReview:
 URL_SCRAPE_ENABLED_PLATFORMS = ("jumia", "kilimall")
 API_INTEGRATION_PLATFORMS = {
     "amazon": "Amazon",
-    "etsy": "Etsy",
     "walmart": "Walmart",
 }
 API_ENABLED_PLATFORMS = {
     "ebay": "eBay",
+    "etsy": "Etsy",
     "shopify": "Shopify",
     "woocommerce": "WooCommerce",
 }
@@ -48,6 +49,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
     if hint in API_ENABLED_PLATFORMS:
         if hint == "ebay":
             return scrape_ebay(url, limit=limit)
+        if hint == "etsy":
+            return scrape_etsy(url, limit=limit)
         if hint == "shopify":
             return scrape_shopify(url, limit=limit)
         if hint == "woocommerce":
@@ -56,7 +59,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[hint]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. eBay, Shopify and WooCommerce API modes are also supported."
+            "jumia.co.ke and kilimall.co.ke. eBay, Etsy, Shopify and WooCommerce API modes are also supported."
         )
 
     platform = _detect_platform_from_host(host)
@@ -66,6 +69,8 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         return scrape_kilimall(url, limit=limit)
     if platform == "ebay":
         return scrape_ebay(url, limit=limit)
+    if platform == "etsy":
+        return scrape_etsy(url, limit=limit)
     if platform == "shopify":
         return scrape_shopify(url, limit=limit)
     if platform == "woocommerce":
@@ -75,7 +80,7 @@ def scrape_reviews(url: str, limit: int = 1000, platform_hint: str | None = None
         platform_name = API_INTEGRATION_PLATFORMS[platform]
         raise ValueError(
             f"{platform_name} requires API integration. Live URL scraping is enabled for "
-            "jumia.co.ke and kilimall.co.ke. eBay, Shopify and WooCommerce API modes are also supported."
+            "jumia.co.ke and kilimall.co.ke. eBay, Etsy, Shopify and WooCommerce API modes are also supported."
         )
 
     supported_hosts = ", ".join(f"{name}.co.ke" for name in URL_SCRAPE_ENABLED_PLATFORMS)
@@ -114,6 +119,130 @@ def _detect_platform_from_host(host: str) -> str:
         if any(needle in host_norm for needle in needles):
             return platform
     return ""
+
+
+def scrape_etsy(url: str, limit: int = 1000) -> list[ScrapedReview]:
+    listing_id = _extract_etsy_listing_id(url)
+    if not listing_id:
+        raise ValueError("Could not detect Etsy listing ID from URL.")
+
+    api_key = os.getenv("ETSY_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Etsy API key missing. Set ETSY_API_KEY in Render Environment.")
+
+    try:
+        reviews = _fetch_etsy_reviews(listing_id, api_key, limit=limit)
+    except Exception as exc:
+        raise ValueError(f"Etsy API request failed: {exc}")
+
+    if reviews:
+        return reviews[:limit]
+    raise ValueError("No reviews found from Etsy API for this listing.")
+
+
+def _extract_etsy_listing_id(url: str) -> str:
+    for pattern in [
+        r"/listing/(\d{6,})",
+        r"(?:^|[?&])listing_id=(\d{6,})",
+        r"(?:^|[?&])id=(\d{6,})",
+    ]:
+        match = re.search(pattern, url, flags=re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _fetch_etsy_reviews(listing_id: str, api_key: str, limit: int = 1000) -> list[ScrapedReview]:
+    if limit <= 0:
+        return []
+
+    reviews: list[ScrapedReview] = []
+    seen: set[str] = set()
+    offset = 0
+    page_size = min(100, max(10, limit))
+
+    headers = {
+        "x-api-key": api_key,
+        "accept": "application/json",
+    }
+
+    while len(reviews) < limit:
+        query = urlencode({"limit": page_size, "offset": offset})
+        api_url = f"https://openapi.etsy.com/v3/application/listings/{listing_id}/reviews?{query}"
+        payload = _fetch_json_any(api_url, timeout=20, retries=1, headers=headers)
+        if not isinstance(payload, dict):
+            break
+
+        items = payload.get("results")
+        if not isinstance(items, list) or not items:
+            break
+
+        total = payload.get("count")
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            review = _review_from_etsy_item(item)
+            key = _review_identity(review) if review else ""
+            if review and key and key not in seen:
+                seen.add(key)
+                reviews.append(review)
+                if len(reviews) >= limit:
+                    return reviews[:limit]
+
+        offset += len(items)
+        if len(items) < page_size:
+            break
+        if isinstance(total, int) and offset >= total:
+            break
+
+    return reviews[:limit]
+
+
+def _review_from_etsy_item(item: dict) -> ScrapedReview | None:
+    text_candidates = [
+        item.get("review"),
+        item.get("review_text"),
+        item.get("message"),
+        item.get("comment"),
+        item.get("text"),
+    ]
+    text = ""
+    for value in text_candidates:
+        if isinstance(value, dict):
+            value = value.get("message") or value.get("text") or value.get("body")
+        value_text = _clean_fragment(str(value or ""))
+        if len(value_text) >= 3:
+            text = value_text
+            break
+    if len(text) < 3:
+        return None
+
+    user_raw = item.get("reviewer_name") or item.get("name") or item.get("buyer_name") or item.get("buyer_user_id")
+    user = str(user_raw or "Anonymous").strip() or "Anonymous"
+    if user.isdigit():
+        user = f"User {user}"
+
+    date = ""
+    date_raw = item.get("created_timestamp") or item.get("create_timestamp") or item.get("created_at") or item.get("date")
+    if isinstance(date_raw, (int, float)):
+        try:
+            date = time.strftime("%Y-%m-%d", time.gmtime(float(date_raw)))
+        except Exception:
+            date = ""
+    else:
+        date = str(date_raw or "").strip()
+        if "T" in date:
+            date = date.split("T", 1)[0]
+
+    rating = ""
+    rating_raw = item.get("rating") or item.get("star_rating")
+    if rating_raw is not None and str(rating_raw).strip():
+        rating_text = str(rating_raw).strip()
+        if rating_text.endswith(".0"):
+            rating_text = rating_text[:-2]
+        rating = f"{rating_text} out of 5"
+
+    return ScrapedReview(text=text, user=user, date=date, rating=rating)
 
 
 def scrape_ebay(url: str, limit: int = 1000) -> list[ScrapedReview]:
@@ -886,27 +1015,32 @@ def scrape_kilimall(url: str, limit: int = 1000) -> list[ScrapedReview]:
     return []
 
 
-def _fetch_html(url: str, timeout: int = 12) -> str:
-    req = Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0 Safari/537.36"
-            )
-        },
-    )
+def _fetch_html(url: str, timeout: int = 12, headers: dict[str, str] | None = None) -> str:
+    req_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        )
+    }
+    if headers:
+        req_headers.update(headers)
+    req = Request(url, headers=req_headers)
     with urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="ignore")
 
 
-def _fetch_json_any(url: str, timeout: int = 12, retries: int = 0):
+def _fetch_json_any(
+    url: str,
+    timeout: int = 12,
+    retries: int = 0,
+    headers: dict[str, str] | None = None,
+):
     last_exc: Exception | None = None
     attempts = max(1, retries + 1)
     for _ in range(attempts):
         try:
-            payload = _fetch_html(url, timeout=timeout)
+            payload = _fetch_html(url, timeout=timeout, headers=headers)
             return json.loads(payload)
         except Exception as exc:
             last_exc = exc
